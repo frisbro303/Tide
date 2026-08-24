@@ -1,0 +1,27 @@
+databases:
+  - name: tide-db
+    plan: free
+    region: oregon
+
+services:
+  - type: web
+    name: tide-server
+    runtime: rust
+    plan: free
+    region: oregon
+    rootDir: server
+    buildCommand: cargo build --release --locked
+    startCommand: ./target/release/server
+    envVars:
+      - key: SQLX_OFFLINE
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tide-db
+          property: connectionString
+      - key: APP_BASE_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false

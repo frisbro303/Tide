@@ -4,3 +4,5 @@ elm-stuff
 repl-temp-*
 app/.vscode/
 app/src/elm.js
+server/.env
+server/target
