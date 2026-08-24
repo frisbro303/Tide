@@ -19,9 +19,3 @@ services:
         fromDatabase:
           name: tide-db
           property: connectionString
-      - key: APP_BASE_URL
-        sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: RESEND_FROM_EMAIL
-        sync: false
