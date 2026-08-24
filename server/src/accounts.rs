@@ -91,12 +91,15 @@ async fn create_account(
 
     let base_url = env::var("APP_BASE_URL").unwrap_or_default();
     let link = format!("{}/verify?token={}", base_url, token);
-    let _ = send_email(
+    if let Err(e) = send_email(
         &row.email,
         "Verify your account",
         &format!("<p>Click to verify: <a href=\"{}\">{}</a></p>", link, link),
     )
-    .await;
+    .await
+    {
+        tracing::error!("failed to send verification email: {e}");
+    }
 
     Ok(Json(row))
 }
@@ -187,12 +190,15 @@ async fn request_password_reset(
 
         let base_url = env::var("APP_BASE_URL").unwrap_or_default();
         let link = format!("{}/password_reset/confirm?token={}", base_url, token);
-        let _ = send_email(
+        if let Err(e) = send_email(
             &req.email,
             "Reset your password",
             &format!("<p>Click to reset: <a href=\"{}\">{}</a></p>", link, link),
         )
-        .await;
+        .await
+        {
+            tracing::error!("failed to send password reset email: {e}");
+        }
     }
 
     // Always return the same response, whether or not the email exists,
