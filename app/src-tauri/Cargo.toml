@@ -27,3 +27,4 @@ typst-kit = { version = "0.15.1", features = ["embedded-fonts"] }
 typst-layout = "0.15.1"
 typst-svg = "0.15"
 fsrs = "6.6.1"
+tauri-plugin-store = "2.4.4"
