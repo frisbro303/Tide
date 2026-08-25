@@ -1,13 +1,12 @@
 module Sea.Sea exposing (..)
 
 import Dict exposing (Dict)
-import Time exposing (Posix)
-import UUID
-
 import Ops.Op exposing (Op, OpKind(..))
 import Ops.OpsLog exposing (OpsLog)
 import Sea.Card as Card
 import Sea.FSRS as FSRS
+import Time exposing (Posix)
+import UUID
 
 
 type alias Sea =
@@ -65,6 +64,11 @@ applyOp op sea =
         CreateCard { id, front, back } ->
             insertCard
                 (Card.Card id front back (FSRS.initialState op.timeStamp))
+                sea
+
+        EditCard { id, front, back } ->
+            updateCard id
+                (\card -> { card | front = front, back = back })
                 sea
 
         DeleteCard id ->

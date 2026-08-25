@@ -1,18 +1,27 @@
 module Main exposing (main)
 
 import Browser
-import Html exposing (Html, div, text)
+import Html exposing (Html, button, div, li, text, ul)
+import Html.Events exposing (onClick)
+import Http
 import Json.Decode as Decode
 import Local.Store as Store
+import Ops.Op as Op exposing (Op, OpId(..), OpKind(..))
+import Random
 import Sync.Account as Account
 import Sync.Session as Session exposing (Session)
+import Sync.Sync as Sync
+import Task
+import Time
 import Typst.Typst as Typst
+import UUID
 
 
 type alias Model =
     { account : Account.Model
     , session : Maybe Session
     , typst : Typst.Model
+    , ops : List Op
     }
 
 
@@ -20,6 +29,11 @@ type Msg
     = AccountMsg Account.Msg
     | TypstMsg Typst.Msg
     | StoreLoaded String Decode.Value
+    | FetchOpsClicked
+    | GotOps (Result Http.Error (List Op))
+    | AppendTestOpClicked
+    | GotTimeForNewOp Time.Posix
+    | GotAppendResult (Result Http.Error ())
 
 
 main : Program () Model Msg
@@ -30,6 +44,7 @@ main =
                 ( { account = Account.init
                   , session = Nothing
                   , typst = Typst.init
+                  , ops = []
                   }
                 , Session.request
                 )
@@ -79,11 +94,67 @@ update msg model =
                 Nothing ->
                     ( model, Cmd.none )
 
+        FetchOpsClicked ->
+            case model.session of
+                Just session ->
+                    ( model, Sync.fetchOps session GotOps )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        GotOps (Ok ops) ->
+            ( { model | ops = ops }, Cmd.none )
+
+        GotOps (Err _) ->
+            ( model, Cmd.none )
+
+        AppendTestOpClicked ->
+            ( model, Task.perform GotTimeForNewOp Time.now )
+
+        GotTimeForNewOp now ->
+            let
+                ( cardUuid, seed1 ) =
+                    Random.step UUID.generator (Random.initialSeed (Time.posixToMillis now))
+
+                ( opUuid, _ ) =
+                    Random.step UUID.generator seed1
+
+                op =
+                    { id = OpId opUuid
+                    , timeStamp = now
+                    , opKind =
+                        CreateCard
+                            { id = cardUuid
+                            , front = "Test front"
+                            , back = "Test back"
+                            }
+                    }
+            in
+            case model.session of
+                Just session ->
+                    ( model, Sync.appendOp session op GotAppendResult )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        GotAppendResult _ ->
+            ( model, Cmd.none )
+
 
 view : Model -> Html Msg
 view model =
     div []
         [ Html.map AccountMsg (Account.view model.session model.account)
+        , case model.session of
+            Just _ ->
+                div []
+                    [ button [ onClick AppendTestOpClicked ] [ text "Append test op" ]
+                    , button [ onClick FetchOpsClicked ] [ text "Fetch ops" ]
+                    , ul [] (List.map (\_ -> li [] [ text "op" ]) model.ops)
+                    ]
+
+            Nothing ->
+                text ""
         , Html.map TypstMsg (Typst.view model.typst)
         ]
 

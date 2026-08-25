@@ -1,8 +1,9 @@
 module Ops.OpsLog exposing (..)
 
 import List.Extra
-import Ops.Op exposing (Op)
+import Ops.Op exposing (Op, OpId(..))
 import Time
+import UUID
 
 
 
@@ -31,7 +32,14 @@ uniqueOps =
 
 sortOps : OpsLog -> OpsLog
 sortOps =
-    List.sortBy (\op -> Time.posixToMillis op.timeStamp)
+    List.sortBy
+        (\op ->
+            let
+                (OpId uuid) =
+                    op.id
+            in
+            ( Time.posixToMillis op.timeStamp, UUID.toString uuid )
+        )
 
 
 merge : OpsLog -> OpsLog -> OpsLog
