@@ -14,23 +14,26 @@ type alias Session =
     { accessToken : String
     , refreshToken : String
     , userId : String
+    , email : String
     }
 
 
 decoder : Decode.Decoder Session
 decoder =
-    Decode.map3 Session
+    Decode.map4 Session
         (Decode.field "access_token" Decode.string)
         (Decode.field "refresh_token" Decode.string)
         (Decode.at [ "user", "id" ] Decode.string)
+        (Decode.at [ "user", "email" ] Decode.string)
 
 
 storeDecoder : Decode.Decoder Session
 storeDecoder =
-    Decode.map3 Session
+    Decode.map4 Session
         (Decode.field "accessToken" Decode.string)
         (Decode.field "refreshToken" Decode.string)
         (Decode.field "userId" Decode.string)
+        (Decode.field "email" Decode.string)
 
 
 save : Session -> Cmd msg
@@ -40,6 +43,7 @@ save session =
             [ ( "accessToken", Encode.string session.accessToken )
             , ( "refreshToken", Encode.string session.refreshToken )
             , ( "userId", Encode.string session.userId )
+            , ( "email", Encode.string session.email )
             ]
         )
 

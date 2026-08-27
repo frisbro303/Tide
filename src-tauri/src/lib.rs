@@ -1,11 +1,22 @@
+mod local_db;
+mod typst_highlight;
 mod typst_renderer;
 
+use local_db::{db_clear_ops, db_get_ops, db_insert_ops};
 use tauri_plugin_store::StoreExt;
+use typst_highlight::highlight_typst;
 use typst_renderer::{render_as_svg, RenderOptions};
 
 #[tauri::command]
-fn render_typst(raw_typst: &str) -> (u32, String) {
-    match render_as_svg(raw_typst, RenderOptions::default()) {
+fn render_typst(raw_typst: &str, ink: &str, preamble: &str) -> (u32, String) {
+    match render_as_svg(
+        raw_typst,
+        RenderOptions {
+            ink,
+            preamble,
+            ..RenderOptions::default()
+        },
+    ) {
         Ok(svg) => (0, svg),
         Err(err) => (1, err),
     }
@@ -42,7 +53,11 @@ pub fn run() {
             render_typst,
             store_set,
             store_get,
-            store_delete
+            store_delete,
+            db_insert_ops,
+            db_get_ops,
+            db_clear_ops,
+            highlight_typst
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

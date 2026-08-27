@@ -1,7 +1,12 @@
 module Sea.FSRS exposing
     ( Rating(..)
     , State
+    , dateOf
+    , defaultDesiredRetention
+    , elapsedDays
     , initialState
+    , isNew
+    , retrievability
     , review
     )
 
@@ -59,7 +64,8 @@ p i =
     Array.get i w |> Maybe.withDefault 0
 
 
-desiredRetention =
+defaultDesiredRetention : Float
+defaultDesiredRetention =
     0.9
 
 
@@ -122,7 +128,7 @@ forgetStability difficulty stability r =
     min stability (p 11 * difficulty ^ -(p 12) * ((stability + 1) ^ p 13 - 1) * e ^ (p 14 * (1 - r)))
 
 
-nextIntervalDays stability =
+nextIntervalDays desiredRetention stability =
     max 1 ((stability / factor) * (desiredRetention ^ (1 / decay) - 1))
 
 
@@ -142,8 +148,8 @@ isNew state =
     state.difficulty == 0
 
 
-review : Posix -> Rating -> State -> State
-review now rating state =
+review : Float -> Posix -> Rating -> State -> State
+review desiredRetention now rating state =
     let
         ( newDifficulty, newStability ) =
             if isNew state then
@@ -169,7 +175,7 @@ review now rating state =
                 in
                 ( nextDifficulty state.difficulty rating, clamp 0.01 36500 stability )
     in
-    { due = addDays (nextIntervalDays newStability) now
+    { due = addDays (nextIntervalDays desiredRetention newStability) now
     , stability = newStability
     , difficulty = newDifficulty
     , lastReview = now

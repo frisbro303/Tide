@@ -5,6 +5,7 @@ import Time exposing (Posix)
 
 import Sea.FSRS as FSRS exposing (Rating)
 
+
 type alias CardId =
     UUID
 
@@ -16,10 +17,10 @@ type alias Card =
     , fsrs : FSRS.State
     }
 
-review : Posix -> Rating -> Card -> Card
-review now rating card =
+review : Float -> Posix -> Rating -> Card -> Card
+review desiredRetention now rating card =
     { card
-        | fsrs = FSRS.review now rating card.fsrs
+        | fsrs = FSRS.review desiredRetention now rating card.fsrs
     }
 
 isDue : Posix -> Card -> Bool

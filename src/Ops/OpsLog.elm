@@ -1,47 +1,59 @@
-module Ops.OpsLog exposing (..)
+module Ops.OpsLog exposing (OpsLog, diff, emptyOpsLog, foldl, fromList, insert, merge, size, toList)
 
-import List.Extra
+import Dict exposing (Dict)
 import Ops.Op exposing (Op, OpId(..))
 import Time
 import UUID
 
 
+type OpsLog
+    = OpsLog (Dict ( Int, String ) Op)
 
--- Conflict-free because card IDs are unique, updates target only
--- observed cards, reviews are immutable facts, and edits are last write win.
 
-
-type alias OpsLog =
-    List Op
+opKey : Op -> ( Int, String )
+opKey op =
+    let
+        (OpId uuid) =
+            op.id
+    in
+    ( Time.posixToMillis op.timeStamp, UUID.toString uuid )
 
 
 emptyOpsLog : OpsLog
 emptyOpsLog =
-    []
+    OpsLog Dict.empty
 
 
-append : Op -> OpsLog -> OpsLog
-append op log =
-    op :: log
+insert : Op -> OpsLog -> OpsLog
+insert op (OpsLog dict) =
+    OpsLog (Dict.insert (opKey op) op dict)
 
 
-uniqueOps : OpsLog -> OpsLog
-uniqueOps =
-    List.Extra.uniqueBy .id
+fromList : List Op -> OpsLog
+fromList ops =
+    List.foldl insert emptyOpsLog ops
 
 
-sortOps : OpsLog -> OpsLog
-sortOps =
-    List.sortBy
-        (\op ->
-            let
-                (OpId uuid) =
-                    op.id
-            in
-            ( Time.posixToMillis op.timeStamp, UUID.toString uuid )
-        )
+toList : OpsLog -> List Op
+toList (OpsLog dict) =
+    Dict.values dict
+
+
+size : OpsLog -> Int
+size (OpsLog dict) =
+    Dict.size dict
+
+
+foldl : (Op -> a -> a) -> a -> OpsLog -> a
+foldl step initial (OpsLog dict) =
+    Dict.foldl (\_ op acc -> step op acc) initial dict
 
 
 merge : OpsLog -> OpsLog -> OpsLog
-merge a b =
-    (a ++ b) |> uniqueOps |> sortOps
+merge (OpsLog a) (OpsLog b) =
+    OpsLog (Dict.union a b)
+
+
+diff : OpsLog -> OpsLog -> OpsLog
+diff (OpsLog a) (OpsLog b) =
+    OpsLog (Dict.diff a b)
