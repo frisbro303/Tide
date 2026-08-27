@@ -1,4 +1,4 @@
-module Sea.Sea exposing (Counts, Sea, applyOp, counts, emptySea, fromOpsLog, getCard, getDue, insertCard, nextDue, removeCard, size, toList, updateCard)
+module Sea.Sea exposing (Counts, Sea, applyOp, counts, emptySea, fromOpsLog, getCard, getDue, insertCard, newCardsToday, nextDue, removeCard, size, toList, updateCard)
 
 import Dict exposing (Dict)
 import Ops.Op exposing (Op, OpKind(..))
@@ -35,11 +35,50 @@ getDue now (Sea { cards }) =
         |> List.filter (Card.isDue now)
 
 
-nextDue : Posix -> Sea -> Maybe Card.Card
-nextDue now sea =
+nextDue : Bool -> Posix -> Sea -> Maybe Card.Card
+nextDue allowNew now sea =
     getDue now sea
+        |> List.filter (\card -> allowNew || not (FSRS.isNew card.fsrs))
         |> List.sortBy (\card -> Time.posixToMillis card.fsrs.due)
         |> List.head
+
+
+newCardsToday : Posix -> OpsLog -> Int
+newCardsToday now opsLog =
+    let
+        today =
+            FSRS.dateOf now
+
+        firstReviewByCard =
+            OpsLog.foldl
+                (\op acc ->
+                    case op.opKind of
+                        ReviewCard { id } ->
+                            Dict.update (UUID.toString id)
+                                (\existing ->
+                                    case existing of
+                                        Just t ->
+                                            if Time.posixToMillis op.timeStamp < Time.posixToMillis t then
+                                                Just op.timeStamp
+
+                                            else
+                                                Just t
+
+                                        Nothing ->
+                                            Just op.timeStamp
+                                )
+                                acc
+
+                        _ ->
+                            acc
+                )
+                Dict.empty
+                opsLog
+    in
+    firstReviewByCard
+        |> Dict.values
+        |> List.filter (\t -> FSRS.dateOf t == today)
+        |> List.length
 
 
 type alias Counts =
@@ -103,6 +142,9 @@ applyOp desiredRetention op sea =
             updateCard id
                 (Card.review desiredRetention op.timeStamp rating)
                 sea
+
+        SetPreamble _ ->
+            sea
 
 
 {-| `desiredRetention` (0-1) governs how far out newly-scheduled reviews are

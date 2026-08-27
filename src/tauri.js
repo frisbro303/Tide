@@ -1,11 +1,17 @@
 const inkFor = (darkMode) => (darkMode ? "#e8e9ec" : "#1c1e21");
 
+function isDarkMode() {
+  const theme = document.documentElement.getAttribute("data-theme");
+  if (theme === "light") return false;
+  if (theme === "dark") return true;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
 export function setupTauri(app) {
   app.ports.compileTypstPort.subscribe(async ([requestId, rawTypst, preamble]) => {
-    const darkMode = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const [status, output] = await window.__TAURI__.core.invoke("render_typst", {
       rawTypst,
-      ink: inkFor(darkMode),
+      ink: inkFor(isDarkMode()),
       preamble,
     });
     app.ports.rawTypstCompiledPort.send([requestId, status, output]);
@@ -52,5 +58,35 @@ export function setupTauri(app) {
 
   app.ports.clearOpsPort.subscribe(async () => {
     await window.__TAURI__.core.invoke("db_clear_ops");
+  });
+
+  app.ports.setThemePort.subscribe((theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+  });
+
+  app.ports.exportDataPort.subscribe((json) => {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tide-backup.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  app.ports.requestImportPort.subscribe(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json";
+    input.onchange = () => {
+      const file = input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        app.ports.importLoadedPort.send(reader.result);
+      };
+      reader.readAsText(file);
+    };
+    input.click();
   });
 }

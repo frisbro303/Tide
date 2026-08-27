@@ -11,10 +11,12 @@
     <script src="./elm.js"></script>
     <script type="module">
       import { setupTauri } from "./tauri.js";
+      import { setupEditorNiceties } from "./editor.js";
       const app = Elm.Main.init({
         node: document.getElementById("app"),
       });
       setupTauri(app);
+      setupEditorNiceties();
     </script>
   </body>
 </html>

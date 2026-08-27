@@ -36,6 +36,7 @@ type OpKind
         { id : CardId
         , rating : Rating
         }
+    | SetPreamble String
 
 
 decoder : Decode.Decoder Op
@@ -88,6 +89,9 @@ opKindDecoder =
                             (\id rating -> ReviewCard { id = id, rating = rating })
                             (Decode.field "id" uuidDecoder)
                             (Decode.field "rating" ratingDecoder)
+
+                    "SetPreamble" ->
+                        Decode.map SetPreamble (Decode.field "preamble" Decode.string)
 
                     other ->
                         Decode.fail ("Unknown op kind: " ++ other)
@@ -160,6 +164,12 @@ opKindEncoder opKind =
                 [ ( "kind", Encode.string "ReviewCard" )
                 , ( "id", uuidEncoder id )
                 , ( "rating", ratingEncoder rating )
+                ]
+
+        SetPreamble preamble ->
+            Encode.object
+                [ ( "kind", Encode.string "SetPreamble" )
+                , ( "preamble", Encode.string preamble )
                 ]
 
 

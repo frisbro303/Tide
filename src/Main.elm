@@ -3,22 +3,32 @@ module Main exposing (main)
 import Add
 import Browser
 import Browser.Events
-import Html exposing (Html, a, button, div, p, span, text)
+import Data
+import Html exposing (Html, a, button, div, h3, p, span, text)
 import Html.Attributes exposing (attribute, class, classList, href, rel, target)
 import List.Extra
 import Html.Events exposing (onClick)
 import Json.Decode as Decode
+import Json.Encode as Encode
 import Local.Store as Store
+import LucideIcons
+import Ops.Op as Op
+import Ops.OpsLog as OpsLog exposing (OpsLog)
 import Page exposing (Page)
+import Random
 import Review
 import Sea.FSRS exposing (Rating(..))
 import Sea.Sea as Sea
 import Settings
 import Stats
+import Svg.Attributes exposing (height, width)
 import Sync.Account as Account
 import Sync.LocalOps as LocalOps
 import Sync.Session as Session exposing (Session)
 import Sync.SessionLifecycle as SessionLifecycle
+import Task
+import Time
+import UUID
 
 
 type alias Model =
@@ -43,6 +53,10 @@ type Msg
     | SettingsMsg Settings.Msg
     | PageToggled Page
     | KeyPressed KeyEvent
+    | ExportDataClicked
+    | ImportDataClicked
+    | GotImportedJson String
+    | GotTimeForPreambleOp String Time.Posix
 
 
 type alias KeyEvent =
@@ -89,6 +103,68 @@ main =
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    let
+        ( newModel, cmd ) =
+            updateInner msg model
+
+        ( syncedModel, syncCmd ) =
+            syncPreambleFromOps newModel
+    in
+    ( syncedModel, Cmd.batch [ cmd, syncCmd ] )
+
+
+latestPreamble : OpsLog -> Maybe String
+latestPreamble opsLog =
+    OpsLog.foldl
+        (\op acc ->
+            case op.opKind of
+                Op.SetPreamble preamble ->
+                    case acc of
+                        Just ( t, _ ) ->
+                            if Time.posixToMillis op.timeStamp > Time.posixToMillis t then
+                                Just ( op.timeStamp, preamble )
+
+                            else
+                                acc
+
+                        Nothing ->
+                            Just ( op.timeStamp, preamble )
+
+                _ ->
+                    acc
+        )
+        Nothing
+        opsLog
+        |> Maybe.map Tuple.second
+
+
+syncPreambleFromOps : Model -> ( Model, Cmd Msg )
+syncPreambleFromOps model =
+    case latestPreamble model.localOps of
+        Just preamble ->
+            if preamble == Settings.typstPreamble model.settings then
+                ( model, Cmd.none )
+
+            else
+                let
+                    ( settingsModel, settingsCmd ) =
+                        Settings.applySyncedPreamble preamble model.settings
+                in
+                ( { model | settings = settingsModel }, Cmd.map SettingsMsg settingsCmd )
+
+        Nothing ->
+            ( model, Cmd.none )
+
+
+newOpId : Time.Posix -> Op.OpId
+newOpId now =
+    Random.step UUID.generator (Random.initialSeed (Time.posixToMillis now))
+        |> Tuple.first
+        |> Op.OpId
+
+
+updateInner : Msg -> Model -> ( Model, Cmd Msg )
+updateInner msg model =
     case msg of
         AccountMsg accountMsg ->
             let
@@ -125,30 +201,9 @@ update msg model =
             )
 
         AddMsg addMsg ->
-            let
-                ( addModel, addCmd, outMsg ) =
-                    Add.update addMsg model.add
+            handleAddMsg addMsg model
 
-                ( afterOutModel, outCmd ) =
-                    case outMsg of
-                        Add.NoOutMsg ->
-                            ( model, Cmd.none )
 
-                        Add.Submitted op ->
-                            let
-                                ( localOpsModel, localOpsCmd ) =
-                                    LocalOps.insertNewOp op model.localOps
-                            in
-                            ( { model | localOps = localOpsModel, page = Page.Review }
-                            , Cmd.batch [ Cmd.map LocalOpsMsg localOpsCmd, pickIfIdle model.review ]
-                            )
-
-                        Add.Canceled ->
-                            ( { model | page = Page.Review }, pickIfIdle model.review )
-            in
-            ( { afterOutModel | add = addModel }
-            , Cmd.batch [ Cmd.map AddMsg addCmd, outCmd ]
-            )
 
         ReviewMsg reviewMsg ->
             handleReviewMsg reviewMsg model
@@ -165,16 +220,86 @@ update msg model =
 
         SettingsMsg settingsMsg ->
             let
-                ( settingsModel, settingsCmd ) =
+                ( settingsModel, settingsCmd, preambleUpdate ) =
                     Settings.update settingsMsg model.settings
+
+                opCmd =
+                    case preambleUpdate of
+                        Settings.PreambleCommitted preamble ->
+                            if Just preamble == latestPreamble model.localOps then
+                                Cmd.none
+
+                            else
+                                Task.perform (GotTimeForPreambleOp preamble) Time.now
+
+                        Settings.PreambleUnchanged ->
+                            Cmd.none
             in
-            ( { model | settings = settingsModel }, Cmd.map SettingsMsg settingsCmd )
+            ( { model | settings = settingsModel }
+            , Cmd.batch [ Cmd.map SettingsMsg settingsCmd, opCmd ]
+            )
+
+        GotTimeForPreambleOp preamble now ->
+            let
+                op =
+                    { id = newOpId now, timeStamp = now, opKind = Op.SetPreamble preamble }
+
+                ( localOpsModel, cmd ) =
+                    LocalOps.insertNewOp op model.localOps
+            in
+            ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg cmd )
 
         PageToggled page ->
             togglePage page model
 
         KeyPressed event ->
             handleKeyPressed event model
+
+        ExportDataClicked ->
+            ( model, Data.exportData (Encode.list Op.encoder (OpsLog.toList model.localOps)) )
+
+        ImportDataClicked ->
+            ( model, Data.requestImport )
+
+        GotImportedJson raw ->
+            case Decode.decodeString (Decode.list Op.decoder) raw of
+                Ok ops ->
+                    let
+                        ( localOpsModel, cmd ) =
+                            LocalOps.update model.session (LocalOps.ImportedOps (OpsLog.fromList ops)) model.localOps
+                    in
+                    ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg cmd )
+
+                Err _ ->
+                    ( model, Cmd.none )
+
+
+handleAddMsg : Add.Msg -> Model -> ( Model, Cmd Msg )
+handleAddMsg addMsg model =
+    let
+        ( addModel, addCmd, outMsg ) =
+            Add.update addMsg model.add
+
+        ( afterOutModel, outCmd ) =
+            case outMsg of
+                Add.NoOutMsg ->
+                    ( model, Cmd.none )
+
+                Add.Submitted op ->
+                    let
+                        ( localOpsModel, localOpsCmd ) =
+                            LocalOps.insertNewOp op model.localOps
+                    in
+                    ( { model | localOps = localOpsModel, page = Page.Review }
+                    , Cmd.batch [ Cmd.map LocalOpsMsg localOpsCmd, pickIfIdle model.review ]
+                    )
+
+                Add.Canceled ->
+                    ( { model | page = Page.Review }, pickIfIdle model.review )
+    in
+    ( { afterOutModel | add = addModel }
+    , Cmd.batch [ Cmd.map AddMsg addCmd, outCmd ]
+    )
 
 
 handleReviewMsg : Review.Msg -> Model -> ( Model, Cmd Msg )
@@ -184,7 +309,7 @@ handleReviewMsg reviewMsg model =
             Sea.fromOpsLog (Settings.desiredRetention model.settings) model.localOps
 
         ( reviewModel, reviewCmd, outMsg ) =
-            Review.update (Settings.typstPreamble model.settings) sea reviewMsg model.review
+            Review.update (Settings.typstPreamble model.settings) (Settings.dailyNewLimit model.settings) model.localOps sea reviewMsg model.review
 
         ( afterOutModel, outCmd ) =
             case outMsg of
@@ -260,7 +385,8 @@ pickIfIdle reviewModel =
 -- and a global key subscription can't preventDefault it, so the OS wins and
 -- closes the app before our handler ever sees the keystroke. "i" (insert)
 -- edits the front; "o" (open-below, since back appears below the divider
--- once revealed) edits the back, only once revealed.
+-- once revealed) edits the back — on Review only once revealed; on Add both
+-- are available immediately since neither field is gated behind a reveal.
 
 
 handleKeyPressed : KeyEvent -> Model -> ( Model, Cmd Msg )
@@ -277,6 +403,9 @@ handleKeyPressed event model =
     else if model.page == Page.Review then
         handleReviewKey event.key model
 
+    else if model.page == Page.Add then
+        handleAddKey event.key model
+
     else
         ( model, Cmd.none )
 
@@ -288,6 +417,19 @@ handleMetaKey key model =
             togglePage page model
 
         Nothing ->
+            ( model, Cmd.none )
+
+
+handleAddKey : String -> Model -> ( Model, Cmd Msg )
+handleAddKey key model =
+    case key of
+        "i" ->
+            handleAddMsg Add.editFront model
+
+        "o" ->
+            handleAddMsg Add.editBack model
+
+        _ ->
             ( model, Cmd.none )
 
 
@@ -355,6 +497,7 @@ view model =
     div [ class "app" ]
         [ pageBar model.page
         , div [ class "page-content" ] [ pageContent model ]
+        , settingsSupportBar model
         , fixedBottomActions model
         ]
 
@@ -421,18 +564,38 @@ settingsView : Model -> Html Msg
 settingsView model =
     div [ class "settings-body" ]
         [ Html.map SettingsMsg (Settings.view model.settings)
-        , div [ class "settings-support" ]
-            [ a
-                [ class "settings-support-link"
-                , href "https://www.buymeacoffee.com/frisbro"
-                , target "_blank"
-                , rel "noopener noreferrer"
-                ]
-                [ span [ class "bmc-icon" ] []
-                , text "Buy Me a Coffee"
+        , div [ class "settings-section" ]
+            [ h3 [ class "history-heading" ] [ text "Data" ]
+            , div [ class "settings-fields" ]
+                [ div [ class "settings-field" ]
+                    [ div [ class "settings-actions" ]
+                        [ button [ class "button-ghost", onClick ExportDataClicked ] [ text "Export data" ]
+                        , button [ class "button-ghost", onClick ImportDataClicked ] [ text "Import data" ]
+                        ]
+                    ]
                 ]
             ]
         ]
+
+
+settingsSupportBar : Model -> Html Msg
+settingsSupportBar model =
+    case model.page of
+        Page.Settings ->
+            div [ class "settings-support-bar" ]
+                [ a
+                    [ class "settings-support-link"
+                    , href "https://www.buymeacoffee.com/frisbro"
+                    , target "_blank"
+                    , rel "noopener noreferrer"
+                    ]
+                    [ LucideIcons.coffeeIcon [ width "16", height "16" ]
+                    , text "Buy Me a Coffee"
+                    ]
+                ]
+
+        _ ->
+            text ""
 
 
 subscriptions : Model -> Sub Msg
@@ -443,6 +606,7 @@ subscriptions model =
         , Sub.map AddMsg (Add.subscriptions model.add)
         , Sub.map ReviewMsg (Review.subscriptions model.review)
         , Sub.map SettingsMsg (Settings.subscriptions model.settings)
+        , Data.importLoaded GotImportedJson
         , Browser.Events.onKeyDown keyEventDecoder |> Sub.map KeyPressed
         ]
 

@@ -478,62 +478,64 @@ accountSection title fields =
 changeEmailForm : Session -> Model -> Html Msg
 changeEmailForm session model =
     div [ class "settings-field" ]
-        [ input
-            [ class "auth-input"
-            , type_ "email"
-            , placeholder "New email"
-            , value model.newEmail
-            , onInput NewEmailChanged
+        [ div [ class "settings-inline-field" ]
+            [ input
+                [ class "auth-input"
+                , type_ "email"
+                , placeholder "New email"
+                , value model.newEmail
+                , onInput NewEmailChanged
+                ]
+                []
+            , button
+                [ class "button-primary"
+                , onClick (ChangeEmailClicked session.accessToken)
+                ]
+                [ text "Update" ]
             ]
-            []
         , accountErrorView model.emailError
         , if model.emailSaved then
             p [ class "account-hint" ] [ text "Check your new email to confirm the change" ]
 
           else
             text ""
-        , div [ class "account-form-actions" ]
-            [ button
-                [ class "button-ghost"
-                , onClick (ChangeEmailClicked session.accessToken)
-                ]
-                [ text "Update email" ]
-            ]
         ]
 
 
 changePasswordForm : Session -> Model -> Html Msg
 changePasswordForm session model =
     div [ class "settings-field" ]
-        [ input
-            [ class "auth-input"
-            , type_ "password"
-            , placeholder "New password"
-            , value model.newPassword
-            , onInput NewPasswordChanged
+        [ div [ class "settings-inline-field" ]
+            [ div [ class "settings-inline-field-inputs" ]
+                [ input
+                    [ class "auth-input"
+                    , type_ "password"
+                    , placeholder "New password"
+                    , value model.newPassword
+                    , onInput NewPasswordChanged
+                    ]
+                    []
+                , input
+                    [ class "auth-input"
+                    , type_ "password"
+                    , placeholder "Confirm new password"
+                    , value model.newPasswordConfirm
+                    , onInput NewPasswordConfirmChanged
+                    ]
+                    []
+                ]
+            , button
+                [ class "button-primary"
+                , onClick (ChangePasswordClicked session.accessToken)
+                ]
+                [ text "Update" ]
             ]
-            []
-        , input
-            [ class "auth-input"
-            , type_ "password"
-            , placeholder "Confirm new password"
-            , value model.newPasswordConfirm
-            , onInput NewPasswordConfirmChanged
-            ]
-            []
         , accountErrorView model.passwordError
         , if model.passwordSaved then
             p [ class "account-hint" ] [ text "Password updated" ]
 
           else
             text ""
-        , div [ class "account-form-actions" ]
-            [ button
-                [ class "button-ghost"
-                , onClick (ChangePasswordClicked session.accessToken)
-                ]
-                [ text "Update password" ]
-            ]
         ]
 
 
