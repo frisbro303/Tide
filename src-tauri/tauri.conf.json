@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "app",
+  "productName": "Tide",
   "version": "0.1.0",
-  "identifier": "com.frisbro.app",
+  "identifier": "com.frisbro.tide",
   "build": {
     "beforeDevCommand": "npm run elm:build",
     "beforeBuildCommand": "npm run elm:build",
@@ -12,12 +12,13 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "app",
+        "title": "Tide",
         "width": 800,
         "height": 600,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 16, "y": 20 }
+        "trafficLightPosition": { "x": 16, "y": 20 },
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -27,12 +28,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Education",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: FELIX RISBRO HJERRILD GRANUM (U9379CAYS9)"
+    }
   }
 }

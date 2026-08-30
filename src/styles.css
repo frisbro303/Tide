@@ -101,6 +101,7 @@ body {
 }
 
 .page-icon {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -110,6 +111,23 @@ body {
   background: none;
   box-shadow: none;
   color: var(--muted);
+}
+
+.page-icon-dot {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+}
+
+.page-icon-dot--ok {
+  background: var(--good);
+}
+
+.page-icon-dot--error {
+  background: var(--danger);
 }
 
 .page-icon:hover {
@@ -122,6 +140,7 @@ body {
   background: none;
   color: var(--ink);
 }
+
 
 .tooltip {
   position: absolute;

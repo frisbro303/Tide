@@ -17,11 +17,11 @@ import Time
 
 
 
--- "Learning" here is a pure approximation (this codebase, like the FSRS
--- algorithm itself, has no distinct Anki-style learning-steps state) — a
--- reviewed card counts as "learning" whenever its current scheduled
--- interval is under a day. Not mutually exclusive with "due": a card can be
--- both overdue and still short-interval.
+-- "Learning" here covers reviewed cards whose current scheduled interval is
+-- under a day (which includes, but isn't limited to, cards actually cycling
+-- through `Sea.Learning`'s short-term steps). Not mutually exclusive with
+-- "due" or "new": a new card can be due the moment it's created, and a
+-- learning-step card can be both new and due at once.
 
 
 type alias Summary =
@@ -44,7 +44,7 @@ summarize now opsLog sea =
             List.partition (\card -> FSRS.isNew card.fsrs) cards
 
         dueCards =
-            List.filter (\card -> Time.posixToMillis card.fsrs.due <= Time.posixToMillis now) reviewedCards
+            List.filter (\card -> Time.posixToMillis card.fsrs.due <= Time.posixToMillis now) cards
 
         learningCards =
             List.filter (\card -> FSRS.elapsedDays card.fsrs.lastReview card.fsrs.due < 1) reviewedCards

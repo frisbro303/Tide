@@ -93,8 +93,16 @@ initialStability rating =
     p (round (ratingNumber rating) - 1)
 
 
+{-| Unclamped — used as the mean-reversion target in `nextDifficulty`, which
+per the reference FSRS-6 implementation pulls toward this raw value (not the
+[1, 10]-clamped one used when a brand new card is first rated).
+-}
+rawInitialDifficulty rating =
+    p 4 - e ^ (p 5 * (ratingNumber rating - 1)) + 1
+
+
 initialDifficulty rating =
-    clamp 1 10 (p 4 - e ^ (p 5 * (ratingNumber rating - 1)) + 1)
+    clamp 1 10 (rawInitialDifficulty rating)
 
 
 nextDifficulty difficulty rating =
@@ -102,11 +110,21 @@ nextDifficulty difficulty rating =
         damped =
             difficulty - p 6 * (ratingNumber rating - 3) * (10 - difficulty) / 9
     in
-    clamp 1 10 (p 7 * initialDifficulty Easy + (1 - p 7) * damped)
+    clamp 1 10 (p 7 * rawInitialDifficulty Easy + (1 - p 7) * damped)
 
 
 shortTermStability stability rating =
-    stability * e ^ (p 17 * (ratingNumber rating - 3 + p 18)) * stability ^ -(p 19)
+    let
+        multiplier =
+            e ^ (p 17 * (ratingNumber rating - 3 + p 18)) * stability ^ -(p 19)
+    in
+    stability
+        * (if rating == Again then
+            multiplier
+
+           else
+            max 1 multiplier
+          )
 
 
 recallStability difficulty stability r rating =
@@ -125,7 +143,14 @@ recallStability difficulty stability r rating =
 
 
 forgetStability difficulty stability r =
-    min stability (p 11 * difficulty ^ -(p 12) * ((stability + 1) ^ p 13 - 1) * e ^ (p 14 * (1 - r)))
+    let
+        newStability =
+            p 11 * difficulty ^ -(p 12) * ((stability + 1) ^ p 13 - 1) * e ^ (p 14 * (1 - r))
+
+        newStabilityMin =
+            stability / e ^ (p 17 * p 18)
+    in
+    min newStability newStabilityMin
 
 
 nextIntervalDays desiredRetention stability =
@@ -173,7 +198,7 @@ review desiredRetention now rating state =
                         else
                             recallStability state.difficulty state.stability r rating
                 in
-                ( nextDifficulty state.difficulty rating, clamp 0.01 36500 stability )
+                ( nextDifficulty state.difficulty rating, clamp 0.001 36500 stability )
     in
     { due = addDays (nextIntervalDays desiredRetention newStability) now
     , stability = newStability

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>App</title>
+    <title>Tide</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
     <script src="./elm.js"></script>
     <script type="module">
       import { setupTauri } from "./tauri.js";
-      import { setupEditorNiceties } from "./editor.js";
+      import { setupEditorNiceties } from "./Typst/editor.js";
       const app = Elm.Main.init({
         node: document.getElementById("app"),
       });

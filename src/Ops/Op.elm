@@ -37,6 +37,8 @@ type OpKind
         , rating : Rating
         }
     | SetPreamble String
+    | SetRetention Int
+    | AddImage { id : String, data : String }
 
 
 decoder : Decode.Decoder Op
@@ -92,6 +94,15 @@ opKindDecoder =
 
                     "SetPreamble" ->
                         Decode.map SetPreamble (Decode.field "preamble" Decode.string)
+
+                    "SetRetention" ->
+                        Decode.map SetRetention (Decode.field "retentionPercent" Decode.int)
+
+                    "AddImage" ->
+                        Decode.map2
+                            (\id data -> AddImage { id = id, data = data })
+                            (Decode.field "id" Decode.string)
+                            (Decode.field "data" Decode.string)
 
                     other ->
                         Decode.fail ("Unknown op kind: " ++ other)
@@ -170,6 +181,19 @@ opKindEncoder opKind =
             Encode.object
                 [ ( "kind", Encode.string "SetPreamble" )
                 , ( "preamble", Encode.string preamble )
+                ]
+
+        SetRetention retentionPercent ->
+            Encode.object
+                [ ( "kind", Encode.string "SetRetention" )
+                , ( "retentionPercent", Encode.int retentionPercent )
+                ]
+
+        AddImage { id, data } ->
+            Encode.object
+                [ ( "kind", Encode.string "AddImage" )
+                , ( "id", Encode.string id )
+                , ( "data", Encode.string data )
                 ]
 
 

@@ -1,5 +1,6 @@
-module Review exposing (Model, Msg, OutMsg(..), editBack, editFront, init, isIdle, isRevealed, rate, requestPick, reveal, subscriptions, update, view, viewActions)
+module Review exposing (Model, Msg, OutMsg(..), editBack, editFront, init, isIdle, isRevealed, rate, requestPick, reveal, subscriptions, themeChanged, update, view, viewActions)
 
+import Dict exposing (Dict)
 import Html exposing (Html, button, div, hr, p, span, text)
 import Html.Attributes exposing (class)
 import Html.Events exposing (onClick)
@@ -8,7 +9,7 @@ import Ops.OpsLog exposing (OpsLog)
 import Random
 import Sea.Card as Card
 import Sea.FSRS exposing (Rating(..))
-import Sea.Sea as Sea exposing (Counts, Sea)
+import Sea.Sea as Sea exposing (Sea)
 import Task
 import Time
 import Typst.EditableTypst as EditableTypst
@@ -23,8 +24,8 @@ import UUID
 
 type Model
     = NotAsked
-    | Empty Counts
-    | Reviewing Counts CurrentCard
+    | Empty
+    | Reviewing CurrentCard
 
 
 type alias CurrentCard =
@@ -50,7 +51,7 @@ init =
 isIdle : Model -> Bool
 isIdle model =
     case model of
-        Reviewing _ _ ->
+        Reviewing _ ->
             False
 
         _ ->
@@ -65,7 +66,7 @@ isIdle model =
 isRevealed : Model -> Bool
 isRevealed model =
     case model of
-        Reviewing _ current ->
+        Reviewing current ->
             current.revealed
 
         _ ->
@@ -85,6 +86,11 @@ editFront =
 editBack : Msg
 editBack =
     BackMsg EditableTypst.requestFocus
+
+
+themeChanged : Msg
+themeChanged =
+    ThemeChanged
 
 
 rate : Rating -> Msg
@@ -108,11 +114,16 @@ type Msg
     | MenuToggled
     | DeleteClicked
     | GotTimeForDelete Card.CardId Time.Posix
+    | AddCardClicked
+    | GotTimeForImageOp String String Time.Posix
+    | ThemeChanged
 
 
 type OutMsg
     = NoOutMsg
     | Submitted Op
+    | AddRequested
+    | ImagePersisted Op
 
 
 newOpId : Time.Posix -> OpId
@@ -122,30 +133,27 @@ newOpId now =
         |> OpId
 
 
-update : String -> Int -> OpsLog -> Sea -> Msg -> Model -> ( Model, Cmd Msg, OutMsg )
-update preamble dailyNewLimit opsLog sea msg model =
+update : String -> Int -> Dict String String -> OpsLog -> Sea -> Msg -> Model -> ( Model, Cmd Msg, OutMsg )
+update preamble dailyNewLimit knownImages opsLog sea msg model =
     case msg of
         GotTimeForPick now ->
             let
-                c =
-                    Sea.counts now sea
-
                 allowNew =
                     Sea.newCardsToday now opsLog < dailyNewLimit
             in
             case Sea.nextDue allowNew now sea of
                 Nothing ->
-                    ( Empty c, Cmd.none, NoOutMsg )
+                    ( Empty, Cmd.none, NoOutMsg )
 
                 Just card ->
                     let
                         ( frontModel, frontCmd ) =
-                            EditableTypst.initWithSource "review-front" "Front" "i" preamble card.front
+                            EditableTypst.initWithSource "review-front" "Front" "i" preamble knownImages card.front
 
                         ( backModel, backCmd ) =
-                            EditableTypst.initWithSource "review-back" "Back" "o" preamble card.back
+                            EditableTypst.initWithSource "review-back" "Back" "o" preamble knownImages card.back
                     in
-                    ( Reviewing c
+                    ( Reviewing
                         { id = card.id
                         , front = frontModel
                         , back = backModel
@@ -158,20 +166,23 @@ update preamble dailyNewLimit opsLog sea msg model =
 
         FrontMsg frontMsg ->
             case model of
-                Reviewing c current ->
+                Reviewing current ->
                     let
-                        ( frontModel, cmd, committed ) =
+                        ( frontModel, cmd, outMsg ) =
                             EditableTypst.update frontMsg current.front
 
                         editCmd =
-                            case committed of
-                                Just newSource ->
+                            case outMsg of
+                                EditableTypst.SourceCommitted newSource ->
                                     Task.perform (GotTimeForEdit current.id True newSource) Time.now
 
-                                Nothing ->
+                                EditableTypst.ImageAdded imgId data ->
+                                    Task.perform (GotTimeForImageOp imgId data) Time.now
+
+                                EditableTypst.NoOutMsg ->
                                     Cmd.none
                     in
-                    ( Reviewing c { current | front = frontModel }
+                    ( Reviewing { current | front = frontModel }
                     , Cmd.batch [ Cmd.map FrontMsg cmd, editCmd ]
                     , NoOutMsg
                     )
@@ -181,20 +192,23 @@ update preamble dailyNewLimit opsLog sea msg model =
 
         BackMsg backMsg ->
             case model of
-                Reviewing c current ->
+                Reviewing current ->
                     let
-                        ( backModel, cmd, committed ) =
+                        ( backModel, cmd, outMsg ) =
                             EditableTypst.update backMsg current.back
 
                         editCmd =
-                            case committed of
-                                Just newSource ->
+                            case outMsg of
+                                EditableTypst.SourceCommitted newSource ->
                                     Task.perform (GotTimeForEdit current.id False newSource) Time.now
 
-                                Nothing ->
+                                EditableTypst.ImageAdded imgId data ->
+                                    Task.perform (GotTimeForImageOp imgId data) Time.now
+
+                                EditableTypst.NoOutMsg ->
                                     Cmd.none
                     in
-                    ( Reviewing c { current | back = backModel }
+                    ( Reviewing { current | back = backModel }
                     , Cmd.batch [ Cmd.map BackMsg cmd, editCmd ]
                     , NoOutMsg
                     )
@@ -204,7 +218,7 @@ update preamble dailyNewLimit opsLog sea msg model =
 
         GotTimeForEdit cardId isFront newSource now ->
             case model of
-                Reviewing _ current ->
+                Reviewing current ->
                     let
                         front =
                             if isFront then
@@ -233,15 +247,15 @@ update preamble dailyNewLimit opsLog sea msg model =
 
         RevealClicked ->
             case model of
-                Reviewing c current ->
-                    ( Reviewing c { current | revealed = True }, Cmd.none, NoOutMsg )
+                Reviewing current ->
+                    ( Reviewing { current | revealed = True }, Cmd.none, NoOutMsg )
 
                 _ ->
                     ( model, Cmd.none, NoOutMsg )
 
         RateClicked rating ->
             case model of
-                Reviewing _ current ->
+                Reviewing current ->
                     ( model, Task.perform (GotTimeForRate current.id rating) Time.now, NoOutMsg )
 
                 _ ->
@@ -259,15 +273,15 @@ update preamble dailyNewLimit opsLog sea msg model =
 
         MenuToggled ->
             case model of
-                Reviewing c current ->
-                    ( Reviewing c { current | menuOpen = not current.menuOpen }, Cmd.none, NoOutMsg )
+                Reviewing current ->
+                    ( Reviewing { current | menuOpen = not current.menuOpen }, Cmd.none, NoOutMsg )
 
                 _ ->
                     ( model, Cmd.none, NoOutMsg )
 
         DeleteClicked ->
             case model of
-                Reviewing _ current ->
+                Reviewing current ->
                     ( model, Task.perform (GotTimeForDelete current.id) Time.now, NoOutMsg )
 
                 _ ->
@@ -283,11 +297,42 @@ update preamble dailyNewLimit opsLog sea msg model =
             in
             ( NotAsked, requestPick, Submitted op )
 
+        AddCardClicked ->
+            ( model, Cmd.none, AddRequested )
+
+        GotTimeForImageOp imgId data now ->
+            let
+                op =
+                    { id = newOpId now
+                    , timeStamp = now
+                    , opKind = AddImage { id = imgId, data = data }
+                    }
+            in
+            ( model, Cmd.none, ImagePersisted op )
+
+        ThemeChanged ->
+            case model of
+                Reviewing current ->
+                    let
+                        ( frontModel, frontCmd, _ ) =
+                            EditableTypst.update EditableTypst.recompile current.front
+
+                        ( backModel, backCmd, _ ) =
+                            EditableTypst.update EditableTypst.recompile current.back
+                    in
+                    ( Reviewing { current | front = frontModel, back = backModel }
+                    , Cmd.batch [ Cmd.map FrontMsg frontCmd, Cmd.map BackMsg backCmd ]
+                    , NoOutMsg
+                    )
+
+                _ ->
+                    ( model, Cmd.none, NoOutMsg )
+
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
     case model of
-        Reviewing _ current ->
+        Reviewing current ->
             Sub.batch
                 [ Sub.map FrontMsg (EditableTypst.subscriptions current.front)
                 , Sub.map BackMsg (EditableTypst.subscriptions current.back)
@@ -303,13 +348,14 @@ view model =
         NotAsked ->
             p [ class "review-empty" ] [ text "Loading..." ]
 
-        Empty _ ->
+        Empty ->
             div [ class "review-empty-state" ]
                 [ p [ class "review-empty" ] [ text "No cards due." ]
                 , p [ class "review-empty review-empty-subtitle" ] [ text "Great work, you're all caught up." ]
+                , button [ class "button-primary", onClick AddCardClicked ] [ text "Add a card now" ]
                 ]
 
-        Reviewing _ current ->
+        Reviewing current ->
             div [ class "review-stage" ]
                 [ div [ class "card-menu" ]
                     (button [ class "page-icon", onClick MenuToggled ]
@@ -352,7 +398,7 @@ view model =
 viewActions : Model -> Html Msg
 viewActions model =
     case model of
-        Reviewing _ current ->
+        Reviewing current ->
             div [ class "review-fixed-content" ]
                 [ div [ class "review-actions" ]
                     (if current.revealed then

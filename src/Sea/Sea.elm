@@ -1,4 +1,4 @@
-module Sea.Sea exposing (Counts, Sea, applyOp, counts, emptySea, fromOpsLog, getCard, getDue, insertCard, newCardsToday, nextDue, removeCard, size, toList, updateCard)
+module Sea.Sea exposing (Sea, applyOp, emptySea, fromOpsLog, getCard, getDue, insertCard, newCardsToday, nextDue, removeCard, size, toList, updateCard)
 
 import Dict exposing (Dict)
 import Ops.Op exposing (Op, OpKind(..))
@@ -81,22 +81,6 @@ newCardsToday now opsLog =
         |> List.length
 
 
-type alias Counts =
-    { new : Int, due : Int }
-
-
-counts : Posix -> Sea -> Counts
-counts now sea =
-    let
-        due =
-            getDue now sea
-
-        newCount =
-            List.length (List.filter (\card -> FSRS.isNew card.fsrs) due)
-    in
-    { new = newCount, due = List.length due - newCount }
-
-
 getCard : Card.CardId -> Sea -> Maybe Card.Card
 getCard id (Sea { cards }) =
     Dict.get (UUID.toString id) cards
@@ -127,7 +111,7 @@ applyOp desiredRetention op sea =
     case op.opKind of
         CreateCard { id, front, back } ->
             insertCard
-                (Card.Card id front back (FSRS.initialState op.timeStamp))
+                (Card.new id front back op.timeStamp)
                 sea
 
         EditCard { id, front, back } ->
@@ -144,6 +128,12 @@ applyOp desiredRetention op sea =
                 sea
 
         SetPreamble _ ->
+            sea
+
+        SetRetention _ ->
+            sea
+
+        AddImage _ ->
             sea
 
 

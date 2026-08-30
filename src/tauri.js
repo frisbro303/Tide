@@ -8,11 +8,12 @@ function isDarkMode() {
 }
 
 export function setupTauri(app) {
-  app.ports.compileTypstPort.subscribe(async ([requestId, rawTypst, preamble]) => {
+  app.ports.compileTypstPort.subscribe(async ({ requestId, source: rawTypst, preamble, images }) => {
     const [status, output] = await window.__TAURI__.core.invoke("render_typst", {
       rawTypst,
       ink: inkFor(isDarkMode()),
       preamble,
+      images,
     });
     app.ports.rawTypstCompiledPort.send([requestId, status, output]);
   });

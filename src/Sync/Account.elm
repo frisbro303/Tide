@@ -13,15 +13,18 @@ import Sync.Session as Session exposing (Session)
 type Stage
     = EnteringCredentials
     | AwaitingVerification
+    | AwaitingRecoveryCode
 
 
 type AuthMode
     = Login
     | Signup
+    | ForgotPassword
 
 
 type LoginError
     = UnconfirmedEmail
+    | AuthRejected String
     | OtherLoginError String
 
 
@@ -57,12 +60,19 @@ type Msg
     | ModeToggled
     | LoginClicked
     | GotLoginResponse (Result LoginError Session)
+    | GotRefreshResponse (Result LoginError Session)
     | SignupClicked
     | GotSignupResponse (Result String ())
     | VerifyClicked
     | GotVerifyResponse (Result Http.Error Session)
     | ResendClicked
     | GotResendResponse (Result String ())
+    | ForgotPasswordClicked
+    | BackToLoginClicked
+    | SendRecoveryClicked
+    | GotRecoverResponse (Result String ())
+    | RecoveryCodeVerifyClicked
+    | GotRecoveryVerifyResponse (Result Http.Error Session)
     | NewPasswordChanged String
     | NewPasswordConfirmChanged String
     | ChangePasswordClicked String
@@ -133,8 +143,31 @@ update msg model =
             , NoSessionChange
             )
 
+        GotLoginResponse (Err (AuthRejected message)) ->
+            ( { model | error = Just message }, Cmd.none, NoSessionChange )
+
         GotLoginResponse (Err (OtherLoginError message)) ->
             ( { model | error = Just message }, Cmd.none, NoSessionChange )
+
+        GotRefreshResponse (Ok session) ->
+            ( { model | error = Nothing }, Cmd.none, SessionEstablished session )
+
+        GotRefreshResponse (Err (AuthRejected _)) ->
+            -- The refresh token itself was rejected (expired, revoked, or
+            -- already rotated by another device) — there's no path back to a
+            -- working session without the user logging in again. Clearing it
+            -- here is what stops sync from retrying forever with a dead
+            -- token and hammering the server with repeated 401s.
+            ( init, Cmd.none, SessionCleared )
+
+        GotRefreshResponse (Err UnconfirmedEmail) ->
+            ( model, Cmd.none, NoSessionChange )
+
+        GotRefreshResponse (Err (OtherLoginError _)) ->
+            -- Network/transport failure, not a token rejection — keep the
+            -- locally-stored session so the app still looks logged in while
+            -- offline; nothing to update here.
+            ( model, Cmd.none, NoSessionChange )
 
         SignupClicked ->
             if model.password /= model.confirmPassword then
@@ -166,6 +199,30 @@ update msg model =
 
         GotResendResponse (Err message) ->
             ( { model | error = Just message }, Cmd.none, NoSessionChange )
+
+        ForgotPasswordClicked ->
+            ( { model | mode = ForgotPassword, error = Nothing }, Cmd.none, NoSessionChange )
+
+        BackToLoginClicked ->
+            ( { model | mode = Login, stage = EnteringCredentials, error = Nothing }, Cmd.none, NoSessionChange )
+
+        SendRecoveryClicked ->
+            ( { model | error = Nothing }, recover model.email, NoSessionChange )
+
+        GotRecoverResponse (Ok _) ->
+            ( { model | stage = AwaitingRecoveryCode, error = Nothing }, Cmd.none, NoSessionChange )
+
+        GotRecoverResponse (Err message) ->
+            ( { model | error = Just message }, Cmd.none, NoSessionChange )
+
+        RecoveryCodeVerifyClicked ->
+            ( { model | error = Nothing }, verifyRecovery model.email model.code, NoSessionChange )
+
+        GotRecoveryVerifyResponse (Ok session) ->
+            ( { model | error = Nothing }, Cmd.none, SessionEstablished session )
+
+        GotRecoveryVerifyResponse (Err _) ->
+            ( { model | error = Just "Invalid or expired code" }, Cmd.none, NoSessionChange )
 
         NewPasswordChanged newPassword ->
             ( { model | newPassword = newPassword, passwordSaved = False }, Cmd.none, NoSessionChange )
@@ -243,7 +300,7 @@ refresh refreshToken =
                 (Encode.object
                     [ ( "refresh_token", Encode.string refreshToken ) ]
                 )
-        , expect = Http.expectStringResponse GotLoginResponse handleLoginResponse
+        , expect = Http.expectStringResponse GotRefreshResponse handleLoginResponse
         , timeout = Nothing
         , tracker = Nothing
         }
@@ -269,10 +326,10 @@ handleLoginResponse response =
                         Err UnconfirmedEmail
 
                     else
-                        Err (OtherLoginError ("Login failed: " ++ errorCode))
+                        Err (AuthRejected ("Login failed: " ++ errorCode))
 
                 Err _ ->
-                    Err (OtherLoginError ("Login failed (" ++ String.fromInt metadata.statusCode ++ ")"))
+                    Err (AuthRejected ("Login failed (" ++ String.fromInt metadata.statusCode ++ ")"))
 
         Http.GoodStatus_ _ body ->
             case Decode.decodeString Session.decoder body of
@@ -401,6 +458,39 @@ resend email =
         }
 
 
+recover : String -> Cmd Msg
+recover email =
+    Http.request
+        { method = "POST"
+        , headers = [ Http.header "apikey" anonKey ]
+        , url = supabaseUrl ++ "/auth/v1/recover"
+        , body = Http.jsonBody (Encode.object [ ( "email", Encode.string email ) ])
+        , expect = Http.expectStringResponse GotRecoverResponse handleUnitResponse
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+verifyRecovery : String -> String -> Cmd Msg
+verifyRecovery email code =
+    Http.request
+        { method = "POST"
+        , headers = [ Http.header "apikey" anonKey ]
+        , url = supabaseUrl ++ "/auth/v1/verify"
+        , body =
+            Http.jsonBody
+                (Encode.object
+                    [ ( "type", Encode.string "recovery" )
+                    , ( "email", Encode.string email )
+                    , ( "token", Encode.string code )
+                    ]
+                )
+        , expect = Http.expectJson GotRecoveryVerifyResponse Session.decoder
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
 updatePassword : String -> String -> Cmd Msg
 updatePassword accessToken newPassword =
     Http.request
@@ -460,10 +550,18 @@ view maybeSession model =
             div [ class "auth" ]
                 [ case model.stage of
                     EnteringCredentials ->
-                        authForm model
+                        case model.mode of
+                            ForgotPassword ->
+                                forgotPasswordForm model
+
+                            _ ->
+                                authForm model
 
                     AwaitingVerification ->
                         verifyForm model
+
+                    AwaitingRecoveryCode ->
+                        recoveryCodeForm model
                 ]
 
 
@@ -552,13 +650,15 @@ accountErrorView error =
 authForm : Model -> Html Msg
 authForm model =
     let
-        modeLabel =
-            case model.mode of
-                Login ->
-                    "Log in"
+        isSignup =
+            model.mode == Signup
 
-                Signup ->
-                    "Sign up"
+        modeLabel =
+            if isSignup then
+                "Sign up"
+
+            else
+                "Log in"
     in
     div [ class "auth-card" ]
         [ p [ class "auth-title" ] [ text modeLabel ]
@@ -580,31 +680,29 @@ authForm model =
                 ]
                 []
              ]
-                ++ (case model.mode of
-                        Login ->
-                            []
-
-                        Signup ->
-                            [ input
-                                [ class "auth-input"
-                                , type_ "password"
-                                , placeholder "Confirm password"
-                                , value model.confirmPassword
-                                , onInput ConfirmPasswordChanged
-                                ]
-                                []
+                ++ (if isSignup then
+                        [ input
+                            [ class "auth-input"
+                            , type_ "password"
+                            , placeholder "Confirm password"
+                            , value model.confirmPassword
+                            , onInput ConfirmPasswordChanged
                             ]
+                            []
+                        ]
+
+                    else
+                        []
                    )
                 ++ [ errorView model.error
                    , button
                         [ class "button-primary"
                         , onClick
-                            (case model.mode of
-                                Login ->
-                                    LoginClicked
+                            (if isSignup then
+                                SignupClicked
 
-                                Signup ->
-                                    SignupClicked
+                             else
+                                LoginClicked
                             )
                         ]
                         [ text modeLabel ]
@@ -612,14 +710,61 @@ authForm model =
             )
         , button [ class "auth-switch", onClick ModeToggled ]
             [ text
-                (case model.mode of
-                    Login ->
-                        "Need an account? Sign up"
+                (if isSignup then
+                    "Already have an account? Log in"
 
-                    Signup ->
-                        "Already have an account? Log in"
+                 else
+                    "Need an account? Sign up"
                 )
             ]
+        , if isSignup then
+            text ""
+
+          else
+            button [ class "auth-switch", onClick ForgotPasswordClicked ] [ text "Forgot password?" ]
+        ]
+
+
+forgotPasswordForm : Model -> Html Msg
+forgotPasswordForm model =
+    div [ class "auth-card" ]
+        [ p [ class "auth-title" ] [ text "Reset password" ]
+        , p [ class "auth-hint" ] [ text "We'll email you a code to reset your password." ]
+        , div [ class "auth-form" ]
+            [ input
+                [ class "auth-input"
+                , type_ "email"
+                , placeholder "Email"
+                , value model.email
+                , onInput EmailChanged
+                ]
+                []
+            , errorView model.error
+            , button [ class "button-primary", onClick SendRecoveryClicked ] [ text "Send reset code" ]
+            ]
+        , button [ class "auth-switch", onClick BackToLoginClicked ] [ text "Back to log in" ]
+        ]
+
+
+recoveryCodeForm : Model -> Html Msg
+recoveryCodeForm model =
+    div [ class "auth-card" ]
+        [ p [ class "auth-title" ] [ text "Reset password" ]
+        , p [ class "auth-hint" ] [ text ("Enter the code sent to " ++ model.email) ]
+        , div [ class "auth-form" ]
+            [ input
+                [ class "auth-input"
+                , type_ "text"
+                , placeholder "Reset code"
+                , value model.code
+                , onInput CodeChanged
+                ]
+                []
+            , errorView model.error
+            , button [ class "button-primary", onClick RecoveryCodeVerifyClicked ] [ text "Verify" ]
+            ]
+        , button [ class "auth-switch", onClick SendRecoveryClicked ] [ text "Resend code" ]
+        , button [ class "auth-switch", onClick BackToLoginClicked ] [ text "Back to log in" ]
         ]
 
 

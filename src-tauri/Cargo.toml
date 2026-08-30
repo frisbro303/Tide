@@ -30,3 +30,4 @@ typst-svg = "0.15"
 fsrs = "6.6.1"
 tauri-plugin-store = "2.4.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"

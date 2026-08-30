@@ -4,7 +4,8 @@ import Add
 import Browser
 import Browser.Events
 import Data
-import Html exposing (Html, a, button, div, h3, p, span, text)
+import Dict exposing (Dict)
+import Html exposing (Html, a, button, div, h3, span, text)
 import Html.Attributes exposing (attribute, class, classList, href, rel, target)
 import List.Extra
 import Html.Events exposing (onClick)
@@ -40,6 +41,7 @@ type alias Model =
     , stats : Stats.Model
     , settings : Settings.Model
     , page : Page
+    , syncError : Maybe String
     }
 
 
@@ -57,6 +59,7 @@ type Msg
     | ImportDataClicked
     | GotImportedJson String
     | GotTimeForPreambleOp String Time.Posix
+    | GotTimeForRetentionOp Int Time.Posix
 
 
 type alias KeyEvent =
@@ -81,11 +84,12 @@ main =
                 ( { account = Account.init
                   , session = Nothing
                   , localOps = localOpsModel
-                  , add = Add.init (Settings.typstPreamble Settings.default)
+                  , add = Add.init (Settings.typstPreamble Settings.default) (latestImages localOpsModel)
                   , review = Review.init
                   , stats = statsModel
                   , settings = Settings.default
                   , page = Page.Review
+                  , syncError = Nothing
                   }
                 , Cmd.batch
                     [ Session.request
@@ -107,35 +111,79 @@ update msg model =
         ( newModel, cmd ) =
             updateInner msg model
 
-        ( syncedModel, syncCmd ) =
+        ( preambleModel, preambleCmd ) =
             syncPreambleFromOps newModel
+
+        ( syncedModel, retentionCmd ) =
+            syncRetentionFromOps preambleModel
     in
-    ( syncedModel, Cmd.batch [ cmd, syncCmd ] )
+    ( syncedModel, Cmd.batch [ cmd, preambleCmd, retentionCmd ] )
 
 
-latestPreamble : OpsLog -> Maybe String
-latestPreamble opsLog =
+latestOpValue : (Op.OpKind -> Maybe a) -> OpsLog -> Maybe a
+latestOpValue extract opsLog =
     OpsLog.foldl
         (\op acc ->
-            case op.opKind of
-                Op.SetPreamble preamble ->
+            case extract op.opKind of
+                Just value ->
                     case acc of
                         Just ( t, _ ) ->
                             if Time.posixToMillis op.timeStamp > Time.posixToMillis t then
-                                Just ( op.timeStamp, preamble )
+                                Just ( op.timeStamp, value )
 
                             else
                                 acc
 
                         Nothing ->
-                            Just ( op.timeStamp, preamble )
+                            Just ( op.timeStamp, value )
 
-                _ ->
+                Nothing ->
                     acc
         )
         Nothing
         opsLog
         |> Maybe.map Tuple.second
+
+
+latestPreamble : OpsLog -> Maybe String
+latestPreamble =
+    latestOpValue
+        (\opKind ->
+            case opKind of
+                Op.SetPreamble preamble ->
+                    Just preamble
+
+                _ ->
+                    Nothing
+        )
+
+
+latestRetention : OpsLog -> Maybe Int
+latestRetention =
+    latestOpValue
+        (\opKind ->
+            case opKind of
+                Op.SetRetention retentionPercent ->
+                    Just retentionPercent
+
+                _ ->
+                    Nothing
+        )
+
+
+latestImages : OpsLog -> Dict String String
+latestImages opsLog =
+    OpsLog.foldl
+        (\op acc ->
+            case op.opKind of
+                Op.AddImage { id, data } ->
+                    Dict.insert id data acc
+
+                _ ->
+                    acc
+        )
+        Dict.empty
+        opsLog
 
 
 syncPreambleFromOps : Model -> ( Model, Cmd Msg )
@@ -154,6 +202,37 @@ syncPreambleFromOps model =
 
         Nothing ->
             ( model, Cmd.none )
+
+
+syncRetentionFromOps : Model -> ( Model, Cmd Msg )
+syncRetentionFromOps model =
+    case latestRetention model.localOps of
+        Just retentionPercent ->
+            if retentionPercent == model.settings.retentionPercent then
+                ( model, Cmd.none )
+
+            else
+                let
+                    ( settingsModel, settingsCmd ) =
+                        Settings.applySyncedRetention retentionPercent model.settings
+                in
+                ( { model | settings = settingsModel }, Cmd.map SettingsMsg settingsCmd )
+
+        Nothing ->
+            ( model, Cmd.none )
+
+
+applySyncStatus : LocalOps.SyncStatus -> Model -> Model
+applySyncStatus status model =
+    case status of
+        LocalOps.NoStatusChange ->
+            model
+
+        LocalOps.SyncFailed message ->
+            { model | syncError = Just message }
+
+        LocalOps.SyncSucceeded ->
+            { model | syncError = Nothing }
 
 
 newOpId : Time.Posix -> Op.OpId
@@ -181,7 +260,16 @@ updateInner msg model =
         StoreLoaded loadedKey value ->
             case Session.decodeFromStore loadedKey value of
                 Just session ->
-                    ( model, Cmd.map AccountMsg (Account.refresh session.refreshToken) )
+                    let
+                        ( updatedModel, localOpsCmd ) =
+                            SessionLifecycle.apply (Account.SessionEstablished session) model
+                    in
+                    ( updatedModel
+                    , Cmd.batch
+                        [ Cmd.map LocalOpsMsg localOpsCmd
+                        , Cmd.map AccountMsg (Account.refresh session.refreshToken)
+                        ]
+                    )
 
                 Nothing ->
                     case Settings.decodeFromStore loadedKey value of
@@ -193,10 +281,10 @@ updateInner msg model =
 
         LocalOpsMsg localOpsMsg ->
             let
-                ( localOpsModel, cmd ) =
+                ( localOpsModel, cmd, syncStatus ) =
                     LocalOps.update model.session localOpsMsg model.localOps
             in
-            ( { model | localOps = localOpsModel }
+            ( applySyncStatus syncStatus { model | localOps = localOpsModel }
             , Cmd.batch [ Cmd.map LocalOpsMsg cmd, pickIfIdle model.review ]
             )
 
@@ -220,11 +308,14 @@ updateInner msg model =
 
         SettingsMsg settingsMsg ->
             let
-                ( settingsModel, settingsCmd, preambleUpdate ) =
+                ( settingsModel, settingsCmd, syncUpdate ) =
                     Settings.update settingsMsg model.settings
 
+                themeChanged =
+                    settingsModel.theme /= model.settings.theme
+
                 opCmd =
-                    case preambleUpdate of
+                    case syncUpdate of
                         Settings.PreambleCommitted preamble ->
                             if Just preamble == latestPreamble model.localOps then
                                 Cmd.none
@@ -232,17 +323,51 @@ updateInner msg model =
                             else
                                 Task.perform (GotTimeForPreambleOp preamble) Time.now
 
-                        Settings.PreambleUnchanged ->
+                        Settings.RetentionCommitted retentionPercent ->
+                            if Just retentionPercent == latestRetention model.localOps then
+                                Cmd.none
+
+                            else
+                                Task.perform (GotTimeForRetentionOp retentionPercent) Time.now
+
+                        Settings.NoSyncUpdate ->
                             Cmd.none
+
+                modelAfterSettings =
+                    { model | settings = settingsModel }
+
+                ( modelAfterTheme, themeCmd ) =
+                    if themeChanged then
+                        let
+                            ( modelAfterAdd, addCmd ) =
+                                handleAddMsg Add.themeChanged modelAfterSettings
+
+                            ( modelAfterReview, reviewCmd ) =
+                                handleReviewMsg Review.themeChanged modelAfterAdd
+                        in
+                        ( modelAfterReview, Cmd.batch [ addCmd, reviewCmd ] )
+
+                    else
+                        ( modelAfterSettings, Cmd.none )
             in
-            ( { model | settings = settingsModel }
-            , Cmd.batch [ Cmd.map SettingsMsg settingsCmd, opCmd ]
+            ( modelAfterTheme
+            , Cmd.batch [ Cmd.map SettingsMsg settingsCmd, opCmd, themeCmd ]
             )
 
         GotTimeForPreambleOp preamble now ->
             let
                 op =
                     { id = newOpId now, timeStamp = now, opKind = Op.SetPreamble preamble }
+
+                ( localOpsModel, cmd ) =
+                    LocalOps.insertNewOp op model.localOps
+            in
+            ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg cmd )
+
+        GotTimeForRetentionOp retentionPercent now ->
+            let
+                op =
+                    { id = newOpId now, timeStamp = now, opKind = Op.SetRetention retentionPercent }
 
                 ( localOpsModel, cmd ) =
                     LocalOps.insertNewOp op model.localOps
@@ -265,10 +390,10 @@ updateInner msg model =
             case Decode.decodeString (Decode.list Op.decoder) raw of
                 Ok ops ->
                     let
-                        ( localOpsModel, cmd ) =
+                        ( localOpsModel, cmd, syncStatus ) =
                             LocalOps.update model.session (LocalOps.ImportedOps (OpsLog.fromList ops)) model.localOps
                     in
-                    ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg cmd )
+                    ( applySyncStatus syncStatus { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg cmd )
 
                 Err _ ->
                     ( model, Cmd.none )
@@ -296,6 +421,13 @@ handleAddMsg addMsg model =
 
                 Add.Canceled ->
                     ( { model | page = Page.Review }, pickIfIdle model.review )
+
+                Add.ImagePersisted op ->
+                    let
+                        ( localOpsModel, localOpsCmd ) =
+                            LocalOps.insertNewOp op model.localOps
+                    in
+                    ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg localOpsCmd )
     in
     ( { afterOutModel | add = addModel }
     , Cmd.batch [ Cmd.map AddMsg addCmd, outCmd ]
@@ -309,7 +441,7 @@ handleReviewMsg reviewMsg model =
             Sea.fromOpsLog (Settings.desiredRetention model.settings) model.localOps
 
         ( reviewModel, reviewCmd, outMsg ) =
-            Review.update (Settings.typstPreamble model.settings) (Settings.dailyNewLimit model.settings) model.localOps sea reviewMsg model.review
+            Review.update (Settings.typstPreamble model.settings) (Settings.dailyNewLimit model.settings) (latestImages model.localOps) model.localOps sea reviewMsg model.review
 
         ( afterOutModel, outCmd ) =
             case outMsg of
@@ -317,6 +449,16 @@ handleReviewMsg reviewMsg model =
                     ( model, Cmd.none )
 
                 Review.Submitted op ->
+                    let
+                        ( localOpsModel, localOpsCmd ) =
+                            LocalOps.insertNewOp op model.localOps
+                    in
+                    ( { model | localOps = localOpsModel }, Cmd.map LocalOpsMsg localOpsCmd )
+
+                Review.AddRequested ->
+                    ( { model | page = Page.Add }, Cmd.none )
+
+                Review.ImagePersisted op ->
                     let
                         ( localOpsModel, localOpsCmd ) =
                             LocalOps.insertNewOp op model.localOps
@@ -347,7 +489,7 @@ togglePage page model =
         -- so it's still there if you come back to Add later.
         newAdd =
             if togglingOff && model.page == Page.Add then
-                Add.init (Settings.typstPreamble model.settings)
+                Add.init (Settings.typstPreamble model.settings) (latestImages model.localOps)
 
             else
                 model.add
@@ -359,6 +501,9 @@ togglePage page model =
 
                 Page.Stats ->
                     Cmd.map StatsMsg Stats.requestSummary
+
+                Page.Account ->
+                    Cmd.map LocalOpsMsg (LocalOps.requestSync model.session)
 
                 _ ->
                     Cmd.none
@@ -495,7 +640,7 @@ rateIfRevealed revealed rating model =
 view : Model -> Html Msg
 view model =
     div [ class "app" ]
-        [ pageBar model.page
+        [ pageBar model
         , div [ class "page-content" ] [ pageContent model ]
         , settingsSupportBar model
         , fixedBottomActions model
@@ -513,32 +658,81 @@ fixedBottomActions model =
             text ""
 
 
-pageBar : Page -> Html Msg
-pageBar currentPage =
+pageBar : Model -> Html Msg
+pageBar model =
     div [ class "page-bar", attribute "data-tauri-drag-region" "true" ]
-        (List.map (pageIcon currentPage) Page.toggleable)
+        (List.map (pageIcon model) Page.toggleable)
 
 
-pageIcon : Page -> Page -> Html Msg
-pageIcon currentPage page =
+type AccountStatus
+    = StatusHidden
+    | StatusOk
+    | StatusError String
+
+
+accountStatus : Model -> AccountStatus
+accountStatus model =
+    case model.session of
+        Nothing ->
+            StatusHidden
+
+        Just _ ->
+            case model.syncError of
+                Nothing ->
+                    StatusOk
+
+                Just message ->
+                    StatusError message
+
+
+pageIcon : Model -> Page -> Html Msg
+pageIcon model page =
+    let
+        status =
+            if page == Page.Account then
+                accountStatus model
+
+            else
+                StatusHidden
+    in
     button
         [ class "page-icon"
-        , classList [ ( "page-icon-active", currentPage == page ) ]
+        , classList [ ( "page-icon-active", model.page == page ) ]
         , onClick (PageToggled page)
         ]
-        [ Page.icon page
-        , span [ class "tooltip" ] [ text (pageTooltip page) ]
-        ]
+        ([ Page.icon page
+         , span [ class "tooltip" ] [ text (pageTooltip status page) ]
+         ]
+            ++ (case status of
+                    StatusHidden ->
+                        []
+
+                    StatusOk ->
+                        [ span [ class "page-icon-dot page-icon-dot--ok" ] [] ]
+
+                    StatusError _ ->
+                        [ span [ class "page-icon-dot page-icon-dot--error" ] [] ]
+               )
+        )
 
 
-pageTooltip : Page -> String
-pageTooltip page =
-    case Page.shortcutLabel page of
-        Just shortcut ->
-            Page.label page ++ " (" ++ shortcut ++ ")"
+pageTooltip : AccountStatus -> Page -> String
+pageTooltip status page =
+    let
+        label =
+            case Page.shortcutLabel page of
+                Just shortcut ->
+                    Page.label page ++ " (" ++ shortcut ++ ")"
 
-        Nothing ->
-            Page.label page
+                Nothing ->
+                    Page.label page
+    in
+    case status of
+        StatusError message ->
+            label ++ " — " ++ message
+
+        _ ->
+            label
 
 
 pageContent : Model -> Html Msg

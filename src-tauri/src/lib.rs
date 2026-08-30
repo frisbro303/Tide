@@ -8,12 +8,30 @@ use typst_highlight::highlight_typst;
 use typst_renderer::{render_as_svg, RenderOptions};
 
 #[tauri::command]
-fn render_typst(raw_typst: &str, ink: &str, preamble: &str) -> (u32, String) {
+fn render_typst(
+    raw_typst: &str,
+    ink: &str,
+    preamble: &str,
+    images: Vec<(String, String)>,
+) -> (u32, String) {
+    use base64::Engine;
+
+    let attachments: Vec<(String, Vec<u8>)> = images
+        .into_iter()
+        .filter_map(|(name, data)| {
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .ok()
+                .map(|bytes| (name, bytes))
+        })
+        .collect();
+
     match render_as_svg(
         raw_typst,
         RenderOptions {
             ink,
             preamble,
+            attachments: &attachments,
             ..RenderOptions::default()
         },
     ) {

@@ -12,15 +12,15 @@ import Json.Decode as Decode
 port focusField : String -> Cmd msg
 
 
-port compileTypstPort : ( String, String, String ) -> Cmd msg
+port compileTypstPort : { requestId : String, source : String, preamble : String, images : List ( String, String ) } -> Cmd msg
 
 
 port rawTypstCompiledPort : (( String, Int, String ) -> msg) -> Sub msg
 
 
-compileTypst : String -> String -> String -> Cmd msg
-compileTypst requestId preamble source =
-    compileTypstPort ( requestId, source, preamble )
+compileTypst : String -> String -> String -> List ( String, String ) -> Cmd msg
+compileTypst requestId preamble source images =
+    compileTypstPort { requestId = requestId, source = source, preamble = preamble, images = images }
 
 
 typstCompiled : (String -> Result String String -> msg) -> Sub msg

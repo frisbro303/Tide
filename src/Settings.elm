@@ -1,4 +1,4 @@
-module Settings exposing (Model, Msg, PreambleUpdate(..), applySyncedPreamble, dailyNewLimit, decodeFromStore, default, desiredRetention, request, subscriptions, typstPreamble, update, view)
+module Settings exposing (Model, Msg, SyncUpdate(..), applySyncedPreamble, applySyncedRetention, dailyNewLimit, decodeFromStore, default, desiredRetention, request, subscriptions, typstPreamble, update, view)
 
 import Browser.Events
 import Html exposing (Html, div, h3, label, option, select, text, textarea)
@@ -151,6 +151,7 @@ preambleFieldId =
 
 type Msg
     = RetentionChanged String
+    | RetentionBlurred
     | DailyNewLimitChanged String
     | ThemeChanged String
     | PreambleChanged String
@@ -162,12 +163,13 @@ type Msg
     | Scrolled Float
 
 
-type PreambleUpdate
-    = PreambleUnchanged
+type SyncUpdate
+    = NoSyncUpdate
     | PreambleCommitted String
+    | RetentionCommitted Int
 
 
-update : Msg -> Model -> ( Model, Cmd Msg, PreambleUpdate )
+update : Msg -> Model -> ( Model, Cmd Msg, SyncUpdate )
 update msg model =
     case msg of
         RetentionChanged raw ->
@@ -177,10 +179,13 @@ update msg model =
                         newModel =
                             { model | retentionPercent = clamp 50 99 percent }
                     in
-                    ( newModel, save newModel, PreambleUnchanged )
+                    ( newModel, save newModel, NoSyncUpdate )
 
                 Nothing ->
-                    ( model, Cmd.none, PreambleUnchanged )
+                    ( model, Cmd.none, NoSyncUpdate )
+
+        RetentionBlurred ->
+            ( model, Cmd.none, RetentionCommitted model.retentionPercent )
 
         DailyNewLimitChanged raw ->
             case String.toInt raw of
@@ -189,53 +194,53 @@ update msg model =
                         newModel =
                             { model | dailyNewLimit = clamp 0 500 n }
                     in
-                    ( newModel, save newModel, PreambleUnchanged )
+                    ( newModel, save newModel, NoSyncUpdate )
 
                 Nothing ->
-                    ( model, Cmd.none, PreambleUnchanged )
+                    ( model, Cmd.none, NoSyncUpdate )
 
         ThemeChanged raw ->
             let
                 newModel =
                     { model | theme = Theme.fromString raw }
             in
-            ( newModel, Cmd.batch [ save newModel, Theme.setTheme newModel.theme ], PreambleUnchanged )
+            ( newModel, Cmd.batch [ save newModel, Theme.setTheme newModel.theme ], NoSyncUpdate )
 
         PreambleChanged text_ ->
-            ( { model | typstPreamble = text_ }, Port.highlightTypst preambleFieldId text_, PreambleUnchanged )
+            ( { model | typstPreamble = text_ }, Port.highlightTypst preambleFieldId text_, NoSyncUpdate )
 
         PreambleBlurred ->
             ( model, save model, PreambleCommitted model.typstPreamble )
 
         GotHighlightTree requestId value ->
             if requestId /= preambleFieldId then
-                ( model, Cmd.none, PreambleUnchanged )
+                ( model, Cmd.none, NoSyncUpdate )
 
             else
                 ( { model | highlightTree = Decode.decodeValue Highlight.decoder value |> Result.toMaybe }
                 , Cmd.none
-                , PreambleUnchanged
+                , NoSyncUpdate
                 )
 
         HandlePressed clientY ->
-            ( { model | drag = Just { startY = clientY, startHeight = model.fieldHeight } }, Cmd.none, PreambleUnchanged )
+            ( { model | drag = Just { startY = clientY, startHeight = model.fieldHeight } }, Cmd.none, NoSyncUpdate )
 
         HandleDragged clientY ->
             case model.drag of
                 Just drag ->
                     ( { model | fieldHeight = clamp minFieldHeight maxFieldHeight (drag.startHeight + (clientY - drag.startY)) }
                     , Cmd.none
-                    , PreambleUnchanged
+                    , NoSyncUpdate
                     )
 
                 Nothing ->
-                    ( model, Cmd.none, PreambleUnchanged )
+                    ( model, Cmd.none, NoSyncUpdate )
 
         HandleReleased ->
-            ( { model | drag = Nothing }, Cmd.none, PreambleUnchanged )
+            ( { model | drag = Nothing }, Cmd.none, NoSyncUpdate )
 
         Scrolled scrollTop ->
-            ( { model | scrollTop = scrollTop }, Cmd.none, PreambleUnchanged )
+            ( { model | scrollTop = scrollTop }, Cmd.none, NoSyncUpdate )
 
 
 applySyncedPreamble : String -> Model -> ( Model, Cmd Msg )
@@ -245,6 +250,15 @@ applySyncedPreamble preamble model =
             { model | typstPreamble = preamble }
     in
     ( newModel, Cmd.batch [ save newModel, Port.highlightTypst preambleFieldId preamble ] )
+
+
+applySyncedRetention : Int -> Model -> ( Model, Cmd Msg )
+applySyncedRetention retentionPercent model =
+    let
+        newModel =
+            { model | retentionPercent = retentionPercent }
+    in
+    ( newModel, save newModel )
 
 
 subscriptions : Model -> Sub Msg
@@ -277,6 +291,7 @@ view model =
                     , Attr.max "99"
                     , value (String.fromInt model.retentionPercent)
                     , onInput RetentionChanged
+                    , onBlur RetentionBlurred
                     ]
                     []
                 ]

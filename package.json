@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "elm:build": "cd src && elm make Main.elm --output=elm.js",
+    "test": "elm-test",
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "elm-test": "^0.19.1"
   },
   "dependencies": {
     "elm": "^0.19.2-0"

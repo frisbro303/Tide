@@ -1,4 +1,4 @@
-module Sync.LocalOps exposing (Model, Msg(..), init, insertNewOp, sessionCleared, sessionEstablished, subscriptions, update)
+module Sync.LocalOps exposing (Model, Msg(..), SyncStatus(..), init, insertNewOp, requestSync, sessionCleared, sessionEstablished, subscriptions, update)
 
 import Http
 import Local.Db as Db
@@ -46,14 +46,20 @@ sessionCleared =
     ( OpsLog.emptyOpsLog, Db.clearOps )
 
 
-update : Maybe Session -> Msg -> Model -> ( Model, Cmd Msg )
+type SyncStatus
+    = NoStatusChange
+    | SyncFailed String
+    | SyncSucceeded
+
+
+update : Maybe Session -> Msg -> Model -> ( Model, Cmd Msg, SyncStatus )
 update session msg model =
     case msg of
         LocalOpsLoaded ops ->
-            ( OpsLog.merge ops model, Cmd.none )
+            ( OpsLog.merge ops model, Cmd.none, NoStatusChange )
 
         SyncTick _ ->
-            ( model, requestSync session )
+            ( model, requestSync session, NoStatusChange )
 
         GotRemoteOps (Ok remoteOps) ->
             case session of
@@ -70,23 +76,46 @@ update session msg model =
                         [ Db.insertOps toPull
                         , Sync.appendOps activeSession toPush GotPushResult
                         ]
+                    , SyncSucceeded
                     )
 
                 Nothing ->
-                    ( model, Cmd.none )
+                    ( model, Cmd.none, NoStatusChange )
 
-        GotRemoteOps (Err _) ->
-            ( model, Cmd.none )
+        GotRemoteOps (Err error) ->
+            ( model, Cmd.none, SyncFailed (describeHttpError error) )
 
-        GotPushResult _ ->
-            ( model, Cmd.none )
+        GotPushResult (Ok ()) ->
+            ( model, Cmd.none, SyncSucceeded )
+
+        GotPushResult (Err error) ->
+            ( model, Cmd.none, SyncFailed (describeHttpError error) )
 
         ImportedOps importedOps ->
             let
                 toInsert =
                     OpsLog.diff importedOps model
             in
-            ( OpsLog.merge importedOps model, Db.insertOps toInsert )
+            ( OpsLog.merge importedOps model, Db.insertOps toInsert, NoStatusChange )
+
+
+describeHttpError : Http.Error -> String
+describeHttpError error =
+    case error of
+        Http.BadUrl _ ->
+            "Sync failed: bad URL"
+
+        Http.Timeout ->
+            "Sync timed out"
+
+        Http.NetworkError ->
+            "Sync failed: no network connection"
+
+        Http.BadStatus code ->
+            "Sync failed (" ++ String.fromInt code ++ ")"
+
+        Http.BadBody _ ->
+            "Sync failed: unexpected response"
 
 
 requestSync : Maybe Session -> Cmd Msg

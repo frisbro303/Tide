@@ -1,5 +1,6 @@
-module Add exposing (Model, Msg, OutMsg(..), editBack, editFront, init, subscriptions, update, view)
+module Add exposing (Model, Msg, OutMsg(..), editBack, editFront, init, subscriptions, themeChanged, update, view)
 
+import Dict exposing (Dict)
 import Html exposing (Html, button, div, hr, p, text)
 import Html.Attributes exposing (class, id)
 import Html.Events exposing (onClick)
@@ -15,15 +16,17 @@ type alias Model =
     { front : EditableTypst.Model
     , back : EditableTypst.Model
     , preamble : String
+    , knownImages : Dict String String
     , error : Maybe String
     }
 
 
-init : String -> Model
-init preamble =
-    { front = EditableTypst.init "add-front" "Front" "i" preamble
-    , back = EditableTypst.init "add-back" "Back" "o" preamble
+init : String -> Dict String String -> Model
+init preamble knownImages =
+    { front = EditableTypst.init "add-front" "Front" "i" preamble knownImages
+    , back = EditableTypst.init "add-back" "Back" "o" preamble knownImages
     , preamble = preamble
+    , knownImages = knownImages
     , error = Nothing
     }
 
@@ -34,12 +37,15 @@ type Msg
     | SubmitClicked
     | GotTimeForSubmit Time.Posix
     | CancelClicked
+    | GotTimeForImageOp String String Time.Posix
+    | ThemeChanged
 
 
 type OutMsg
     = NoOutMsg
     | Submitted Op
     | Canceled
+    | ImagePersisted Op
 
 
 editFront : Msg
@@ -52,22 +58,50 @@ editBack =
     BackMsg EditableTypst.requestFocus
 
 
+themeChanged : Msg
+themeChanged =
+    ThemeChanged
+
+
+newOpId : Time.Posix -> OpId
+newOpId now =
+    Random.step UUID.generator (Random.initialSeed (Time.posixToMillis now))
+        |> Tuple.first
+        |> OpId
+
+
 update : Msg -> Model -> ( Model, Cmd Msg, OutMsg )
 update msg model =
     case msg of
         FrontMsg frontMsg ->
             let
-                ( frontModel, cmd, _ ) =
+                ( frontModel, cmd, outMsg ) =
                     EditableTypst.update frontMsg model.front
+
+                imageCmd =
+                    case outMsg of
+                        EditableTypst.ImageAdded imgId data ->
+                            Task.perform (GotTimeForImageOp imgId data) Time.now
+
+                        _ ->
+                            Cmd.none
             in
-            ( { model | front = frontModel }, Cmd.map FrontMsg cmd, NoOutMsg )
+            ( { model | front = frontModel }, Cmd.batch [ Cmd.map FrontMsg cmd, imageCmd ], NoOutMsg )
 
         BackMsg backMsg ->
             let
-                ( backModel, cmd, _ ) =
+                ( backModel, cmd, outMsg ) =
                     EditableTypst.update backMsg model.back
+
+                imageCmd =
+                    case outMsg of
+                        EditableTypst.ImageAdded imgId data ->
+                            Task.perform (GotTimeForImageOp imgId data) Time.now
+
+                        _ ->
+                            Cmd.none
             in
-            ( { model | back = backModel }, Cmd.map BackMsg cmd, NoOutMsg )
+            ( { model | back = backModel }, Cmd.batch [ Cmd.map BackMsg cmd, imageCmd ], NoOutMsg )
 
         SubmitClicked ->
             if EditableTypst.isBlank model.front || EditableTypst.isBlank model.back then
@@ -95,10 +129,33 @@ update msg model =
                             }
                     }
             in
-            ( init model.preamble, Cmd.none, Submitted op )
+            ( init model.preamble model.knownImages, Cmd.none, Submitted op )
 
         CancelClicked ->
-            ( init model.preamble, Cmd.none, Canceled )
+            ( init model.preamble model.knownImages, Cmd.none, Canceled )
+
+        GotTimeForImageOp imgId data now ->
+            let
+                op =
+                    { id = newOpId now
+                    , timeStamp = now
+                    , opKind = AddImage { id = imgId, data = data }
+                    }
+            in
+            ( model, Cmd.none, ImagePersisted op )
+
+        ThemeChanged ->
+            let
+                ( frontModel, frontCmd, _ ) =
+                    EditableTypst.update EditableTypst.recompile model.front
+
+                ( backModel, backCmd, _ ) =
+                    EditableTypst.update EditableTypst.recompile model.back
+            in
+            ( { model | front = frontModel, back = backModel }
+            , Cmd.batch [ Cmd.map FrontMsg frontCmd, Cmd.map BackMsg backCmd ]
+            , NoOutMsg
+            )
 
 
 subscriptions : Model -> Sub Msg

@@ -1,6 +1,7 @@
-module Typst.EditableTypst exposing (Model, Msg, currentSource, init, initWithSource, isBlank, requestFocus, subscriptions, update, view)
+module Typst.EditableTypst exposing (Model, Msg, OutMsg(..), currentSource, init, initWithSource, isBlank, recompile, requestFocus, subscriptions, update, view)
 
 import Browser.Events
+import Dict exposing (Dict)
 import Html exposing (Html, div, img, span, text, textarea)
 import Html.Attributes exposing (attribute, class, classList, id, placeholder, spellcheck, src, style, value)
 import Html.Events exposing (on, onBlur, onClick, onInput, preventDefaultOn)
@@ -30,6 +31,8 @@ type alias Model =
     , drag : Maybe Drag
     , scrollTop : Float
     , highlightTree : Maybe Highlight.Node
+    , knownImages : Dict String String
+    , pendingImages : Dict String String
     }
 
 
@@ -54,8 +57,8 @@ maxFieldHeight =
     480
 
 
-init : String -> String -> String -> String -> Model
-init id fieldPlaceholder shortcutHint preamble =
+init : String -> String -> String -> String -> Dict String String -> Model
+init id fieldPlaceholder shortcutHint preamble knownImages =
     { id = id
     , fieldPlaceholder = fieldPlaceholder
     , shortcutHint = shortcutHint
@@ -69,6 +72,8 @@ init id fieldPlaceholder shortcutHint preamble =
     , drag = Nothing
     , scrollTop = 0
     , highlightTree = Nothing
+    , knownImages = knownImages
+    , pendingImages = Dict.empty
     }
 
 
@@ -77,8 +82,8 @@ init id fieldPlaceholder shortcutHint preamble =
 -- committed source's compiled preview rather than an empty edit box.
 
 
-initWithSource : String -> String -> String -> String -> String -> ( Model, Cmd Msg )
-initWithSource id fieldPlaceholder shortcutHint preamble existingSource =
+initWithSource : String -> String -> String -> String -> Dict String String -> String -> ( Model, Cmd Msg )
+initWithSource id fieldPlaceholder shortcutHint preamble knownImages existingSource =
     ( { id = id
       , fieldPlaceholder = fieldPlaceholder
       , shortcutHint = shortcutHint
@@ -92,13 +97,15 @@ initWithSource id fieldPlaceholder shortcutHint preamble existingSource =
       , drag = Nothing
       , scrollTop = 0
       , highlightTree = Nothing
+      , knownImages = knownImages
+      , pendingImages = Dict.empty
       }
     , if String.trim existingSource == "" then
         Cmd.none
 
       else
         Cmd.batch
-            [ Port.compileTypst id preamble existingSource
+            [ Port.compileTypst id preamble existingSource (imageAttachments knownImages Dict.empty existingSource)
             , Port.highlightTypst id existingSource
             ]
     )
@@ -128,10 +135,40 @@ currentSource model =
         model.committedSource
 
 
+referencedImageIds : String -> List String
+referencedImageIds source =
+    String.split "#image(\"" source
+        |> List.drop 1
+        |> List.filterMap
+            (\chunk ->
+                case String.split "\"" chunk of
+                    first :: _ ->
+                        if String.endsWith ".png" first then
+                            Just (String.dropRight 4 first)
+
+                        else
+                            Nothing
+
+                    [] ->
+                        Nothing
+            )
+
+
+imageAttachments : Dict String String -> Dict String String -> String -> List ( String, String )
+imageAttachments knownImages pendingImages source =
+    let
+        allImages =
+            Dict.union pendingImages knownImages
+    in
+    referencedImageIds source
+        |> List.filterMap (\imgId -> Dict.get imgId allImages |> Maybe.map (\data -> ( imgId ++ ".png", data )))
+
+
 type Msg
     = EditStarted
     | FocusRequested
     | DraftChanged String
+    | ImageReceived String String
     | GotDraftResult String (Result String String)
     | GotHighlightTree String Decode.Value
     | Committed
@@ -139,6 +176,7 @@ type Msg
     | HandleDragged Float
     | HandleReleased
     | Scrolled Float
+    | Recompile
 
 
 requestFocus : Msg
@@ -146,19 +184,25 @@ requestFocus =
     FocusRequested
 
 
-{-| The third element is `Just newSource` exactly when `Committed` just
-changed the committed source (mirrors the reference's `if (value === text)
-return;` no-op-if-unchanged) — callers that auto-save on commit (e.g. editing
-a card mid-review) should react to it; everything else can ignore it.
--}
-update : Msg -> Model -> ( Model, Cmd Msg, Maybe String )
+recompile : Msg
+recompile =
+    Recompile
+
+
+type OutMsg
+    = NoOutMsg
+    | SourceCommitted String
+    | ImageAdded String String
+
+
+update : Msg -> Model -> ( Model, Cmd Msg, OutMsg )
 update msg model =
     case msg of
         EditStarted ->
             if isEditing model then
                 -- Already editing (e.g. clicking inside the textarea to
                 -- place the cursor) — don't clobber the in-progress draft.
-                ( model, Cmd.none, Nothing )
+                ( model, Cmd.none, NoOutMsg )
 
             else
                 ( { model
@@ -167,7 +211,7 @@ update msg model =
                     , draftResult = model.committedResult
                   }
                 , Port.focusField (textareaId model)
-                , Nothing
+                , NoOutMsg
                 )
 
         FocusRequested ->
@@ -181,40 +225,50 @@ update msg model =
                     , draftResult = model.committedResult
                 }
             , Port.focusField (textareaId model)
-            , Nothing
+            , NoOutMsg
             )
 
         DraftChanged newSource ->
             ( { model | draftSource = newSource }
             , Cmd.batch
-                [ Port.compileTypst model.id model.preamble newSource
+                [ Port.compileTypst model.id model.preamble newSource (imageAttachments model.knownImages model.pendingImages newSource)
                 , Port.highlightTypst model.id newSource
                 ]
-            , Nothing
+            , NoOutMsg
+            )
+
+        ImageReceived imgId data ->
+            let
+                newModel =
+                    { model | pendingImages = Dict.insert imgId data model.pendingImages }
+            in
+            ( newModel
+            , Port.compileTypst newModel.id newModel.preamble newModel.draftSource (imageAttachments newModel.knownImages newModel.pendingImages newModel.draftSource)
+            , ImageAdded imgId data
             )
 
         GotDraftResult requestId result ->
             if requestId /= model.id then
-                ( model, Cmd.none, Nothing )
+                ( model, Cmd.none, NoOutMsg )
 
             else if isEditing model then
                 -- Covers both actively typing (manualEditing) and a fresh
                 -- blank field (isBlank implies isEditing even though
                 -- manualEditing is still False) — either way the textarea
                 -- is showing, so the result belongs in the draft preview.
-                ( { model | draftResult = result }, Cmd.none, Nothing )
+                ( { model | draftResult = result }, Cmd.none, NoOutMsg )
 
             else
-                ( { model | committedResult = result }, Cmd.none, Nothing )
+                ( { model | committedResult = result }, Cmd.none, NoOutMsg )
 
         GotHighlightTree requestId value ->
             if requestId /= model.id then
-                ( model, Cmd.none, Nothing )
+                ( model, Cmd.none, NoOutMsg )
 
             else
                 ( { model | highlightTree = Decode.decodeValue Highlight.decoder value |> Result.toMaybe }
                 , Cmd.none
-                , Nothing
+                , NoOutMsg
                 )
 
         Committed ->
@@ -229,16 +283,16 @@ update msg model =
               }
             , Cmd.none
             , if changed then
-                Just model.draftSource
+                SourceCommitted model.draftSource
 
               else
-                Nothing
+                NoOutMsg
             )
 
         HandlePressed clientY ->
             ( { model | drag = Just { startY = clientY, startHeight = model.fieldHeight } }
             , Cmd.none
-            , Nothing
+            , NoOutMsg
             )
 
         HandleDragged clientY ->
@@ -246,17 +300,31 @@ update msg model =
                 Just drag ->
                     ( { model | fieldHeight = clamp minFieldHeight maxFieldHeight (drag.startHeight + (clientY - drag.startY)) }
                     , Cmd.none
-                    , Nothing
+                    , NoOutMsg
                     )
 
                 Nothing ->
-                    ( model, Cmd.none, Nothing )
+                    ( model, Cmd.none, NoOutMsg )
 
         HandleReleased ->
-            ( { model | drag = Nothing }, Cmd.none, Nothing )
+            ( { model | drag = Nothing }, Cmd.none, NoOutMsg )
 
         Scrolled scrollTop ->
-            ( { model | scrollTop = scrollTop }, Cmd.none, Nothing )
+            ( { model | scrollTop = scrollTop }, Cmd.none, NoOutMsg )
+
+        Recompile ->
+            let
+                source =
+                    currentSource model
+            in
+            if String.trim source == "" then
+                ( model, Cmd.none, NoOutMsg )
+
+            else
+                ( model
+                , Port.compileTypst model.id model.preamble source (imageAttachments model.knownImages model.pendingImages source)
+                , NoOutMsg
+                )
 
 
 subscriptions : Model -> Sub Msg
@@ -274,6 +342,13 @@ subscriptions model =
             Nothing ->
                 Sub.none
         ]
+
+
+imageEventDecoder : Decode.Decoder Msg
+imageEventDecoder =
+    Decode.map2 ImageReceived
+        (Decode.at [ "detail", "id" ] Decode.string)
+        (Decode.at [ "detail", "data" ] Decode.string)
 
 
 view : Model -> Html Msg
@@ -313,6 +388,7 @@ view model =
                         , onInput DraftChanged
                         , onBlur Committed
                         , on "scroll" (Decode.map Scrolled (Decode.at [ "target", "scrollTop" ] Decode.float))
+                        , on "tide-image-added" imageEventDecoder
                         ]
                         []
                     , div
